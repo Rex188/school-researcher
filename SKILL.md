@@ -96,6 +96,9 @@ SchoolResearch/
      | 文书题目、字数限制、DDL | **单申请季，跨周期必须全部重查** |
      | 场馆、节庆、学生项目、资助 | 约 365 天 |
    - **教授任职必须单独核实**：写 Why School 前确认该教授在本申请季确实属于目标院校编制。把外校教授当作目标院校的文书锚点是硬伤。
+   - **不得把 ⚠️「无法判定」当成 ❌「来源失效」**：反爬 403/429、HEAD 误答 404、超时
+     都不构成"来源失效"的证据。把工具自身的故障说成引用有问题，会导致删掉正确的引用，
+     比不核验更糟。详见 `references/verification_standards.md` §0.1。
 
 ---
 
@@ -109,4 +112,4 @@ SchoolResearch/
 - **Step 6: 教授学术图谱与文献级检索 (Faculty & Publications)**：锁定 2-3 位导师，**核对其当前任职单位**，检索真实著作与论文，给出永久 DOI / PubMed / 出版社直链及准确卷期页。
 - **Step 7: Why 文书论证因果链与事实大纲 (Narrative Logic Chain)**：编写去 AI 化的三段式事实与学术对接 Bullet Points 大纲。
 - **Step 8: 交付独立单校 Master Dossier**：在 `reports/[School]/` 下生成终版档案，每条外部事实附核验日期。
-- **Step 9: 核验与回写**：运行 `python3 scripts/verify.py reports/[School]/`，退出码为 0 后，向选校总表回写状态 `[已核验]`。若存在 ❌ 项，修正后重跑，直至通过。
+- **Step 9: 核验与回写**：先跑 `python3 scripts/verify.py --self-test` 确认核验器本身不误判，再运行 `python3 scripts/verify.py reports/[School]/`；退出码为 0 后，向选校总表回写状态 `[已核验]`。若存在 ❌ 项，修正后重跑，直至通过；⚠️ 项须人工点击确认并改写「核验方式」列。

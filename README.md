@@ -21,6 +21,7 @@
 ```bash
 python3 scripts/verify.py reports/          # 核验全部产出
 python3 scripts/verify.py --json            # 机器可读，可直接用于 CI
+python3 scripts/verify.py --self-test       # 先证明核验器自己不误判
 ```
 
 它会：
@@ -32,6 +33,21 @@ python3 scripts/verify.py --json            # 机器可读，可直接用于 CI
 - **铁律合规** → 扫描 Google Scholar 引用等违规写法
 
 **退出码非 0 即表示档案不可交付。** 仅依赖 Python 标准库，无需 `pip install`。
+
+### 核验器自身的失效模式
+
+核验器最容易犯的错，是把**自己的故障**说成**你的来源失效**。那比不核验更糟：
+它会让你删掉一条正确的引用。因此本项目对以下情形一律降级为 ⚠️「无法判定」而非 ❌：
+
+| 现象 | 为什么不能判 ❌ |
+| :--- | :--- |
+| CrossRef / NCBI 返回 **429** | 是本工具并发请求触发的限流，与 DOI 是否存在无关（已加退避重试，并发降到 3） |
+| 页面返回 **404，但复测出现 403/200** | 反爬抖动。实测 `peabody.jhu.edu` 对确实存在的页面约 13% 请求返回 404 |
+| 仅 **HEAD** 请求返回 404 | WAF 误答 HEAD 极常见，必须用 GET 复核 |
+| 超时 / 握手失败 / 连接被拒 | 无法区分是源挂了还是本机网络问题 |
+| DNS 解析失败、TLS 证书域名不符 | 这两个是**可信的**失效信号，仍判 ❌ |
+
+判定逻辑由 `--self-test` 的 12 条回归用例钉死；CI 会先跑自检，再用它去判别人的档案。
 
 > 为什么需要这个？因为引文的**页码**和教授的**任职单位**这类事实，
 > 恰恰是模型最容易"写得看起来很对"的地方：论文真实存在，但卷期页是编的；
@@ -85,7 +101,8 @@ SchoolResearch/
 
 ```
 ├── SKILL.md                         # Skill 定义（Claude / Gemini 等按需自动挂载）
-├── scripts/verify.py                # 引文核验器（本项目的核心）
+├── scripts/verify.py                # 引文核验器（本项目的核心），含 --self-test
+├── scripts/check_skill.py           # 校验 SKILL.md description 的 1024 字符上限
 ├── agent_rules/                     # 多平台接入说明
 │   └── SYSTEM_PROMPT.md             # 【权威规则源】其余文件均为其薄封装
 ├── references/verification_standards.md  # 信源核验标准
@@ -94,6 +111,8 @@ SchoolResearch/
 ```
 
 > **单一权威源原则**：所有执行规则以 `agent_rules/SYSTEM_PROMPT.md` 为准。
+> 同理，校验逻辑也只有一份实现——正则内联复制到多处，正是本仓库真实踩过的坑
+> （见 `scripts/check_skill.py` 的文件头说明）。
 > 其余各平台文件只说明"如何接入"，不重复规则内容——避免同一条铁律被复述四五遍后各自漂移。
 
 ---

@@ -19,13 +19,16 @@ cp -r SKILL.md scripts references templates agent_rules \
       ~/.claude/skills/school-researcher/
 ```
 
-> 注意：`SKILL.md` 的 `description` 字段受 **1024 字符**上限约束。修改后请用
-> `scripts/verify.py` 或下述命令自检，超限会导致 Skill 无法被正确加载：
+> 注意：`SKILL.md` 的 `description` 字段受 **1024 字符**上限约束，超限会导致
+> Skill 无法被正确加载。修改后请自检：
 >
 > ```bash
-> python3 -c "import re;d=open('SKILL.md',encoding='utf-8').read();\
-> m=re.search(r'description:\s*\|(.*?)\n[a-z]+:',d,re.S);print(len(m.group(1)))"
+> python3 scripts/check_skill.py
 > ```
+>
+> （此前文档与 CI 里各写了一份内联正则，两份都写错了——正则要求 description 块后
+> 紧跟 `[a-z]+:`，而块标量后面其实是 frontmatter 结束符 `---`，于是永远匹配不到、
+> 永远报 0 字符，"超限报错" 的闸门从未生效。现在校验逻辑只有 `check_skill.py` 一份。）
 
 ---
 

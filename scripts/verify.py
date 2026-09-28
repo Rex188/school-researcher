@@ -49,6 +49,7 @@ import re
 import socket
 import ssl
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -73,7 +74,11 @@ OK, WARN, FAIL = "ok", "warn", "fail"
 # 排除反引号与中日韩标点：避免把中文句子里的句号、以及被引号包裹的 URL 一起吞掉
 URL_RE = re.compile(r"https?://[^\s)\"'<>\]`。，、；：？！（）【】《》…]+")
 DOI_IN_URL_RE = re.compile(r"(?:doi\.org/|doi:)(10\.\d{4,9}/[^\s)\"'<>,;]+)", re.I)
-PMID_IN_URL_RE = re.compile(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d{6,9})", re.I)
+# 不限制位数：pubmed.ncbi.nlm.nih.gov/<数字>/ 一律交给 E-utilities 判定。
+# 写死 6-9 位有两个坑：超长的会被截断成前 9 位反查到**另一个真实 PMID**；
+# 而够不到 6 位的会退化成普通网页检查——NCBI 对不存在的条目返回 200 软 404，
+# 于是编造的 ID 反而报「通过」。交给 API 判定才是唯一可靠的做法。
+PMID_IN_URL_RE = re.compile(r"pubmed\.ncbi\.nlm\.nih\.gov/(\d+)", re.I)
 
 # "47(2), 215–242" / "3(3), 243-249" / "12, 100–110"
 CITE_RE = re.compile(
@@ -122,6 +127,31 @@ def cite_eq(claimed: str, actual: str) -> bool:
 
 # ---------------------------------------------------------------- HTTP
 
+def _confirm_gone(url: str, rounds: int = 3) -> bool:
+    """复测 404 是否稳定。只要出现一次矛盾应答，就说明是反爬抖动而非页面消失。
+
+    实测依据：peabody.jhu.edu 对**确实存在**的页面，约 13% 的请求返回 404，
+    其余返回 403。若采信单次 404，工具就会把自己触发的反爬拦截，
+    报成「你引用的页面不存在」。
+    """
+    for _ in range(rounds):
+        time.sleep(0.3)
+        req = urllib.request.Request(
+            url, method="GET",
+            headers={"User-Agent": UA, "Accept": "text/html,*/*"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                if r.status < 400:
+                    return False  # 又能拿到了 → 绝不是页面消失
+        except urllib.error.HTTPError as e:
+            if e.code not in (404, 410):
+                return False  # 403/429/5xx → 反爬或服务端故障，不是「没了」
+        except Exception:  # noqa: BLE001
+            return False  # 网络抖动，无法判定
+    return True
+
+
 def http_status(url: str) -> tuple[str, str]:
     """返回 (status, detail)。status ∈ ok / warn / fail。
 
@@ -130,7 +160,7 @@ def http_status(url: str) -> tuple[str, str]:
       「你引用的论文页面不存在」的工具，比没有工具更危险。
 
       因此判定规则刻意保守：
-        · 服务器明确应答 404/410      → FAIL（页面确实没了）
+        · 服务器明确应答 404/410      → **复测确认后**才 FAIL（单次 404 可能是反爬抖动）
         · 服务器明确应答 401/403/429  → WARN（反爬，需人工点击）
         · DNS 解析失败 (NXDOMAIN)     → FAIL（域名确实不在了）
         · 超时 / 握手失败 / 连接被拒  → WARN（无法区分是源挂了还是本机网络问题）
@@ -148,7 +178,11 @@ def http_status(url: str) -> tuple[str, str]:
             if e.code in (401, 403, 429):
                 return WARN, f"HTTP {e.code}（反爬拦截，需人工点击核验）"
             if e.code in (404, 410):
-                return FAIL, f"HTTP {e.code}（服务器应答：页面不存在）"
+                if method == "HEAD":
+                    continue  # HEAD 被 WAF 误答 404 极常见，必须用 GET 复核
+                if _confirm_gone(url):
+                    return FAIL, f"HTTP {e.code}（连续复核均为 404/410，页面应已不存在）"
+                return WARN, f"HTTP {e.code}（应答不稳定，疑反爬抖动，需人工核验）"
             if method == "GET":
                 return WARN, f"HTTP {e.code}"
         except urllib.error.URLError as e:
@@ -175,19 +209,54 @@ def http_status(url: str) -> tuple[str, str]:
     return WARN, "网络不可达，无法判定"
 
 
-def get_json(url: str) -> tuple[bool, dict | None, str]:
-    """返回 (reached, data, error)。reached=False 表示是本机网络问题，而非数据源查无。"""
-    req = urllib.request.Request(
-        url, headers={"User-Agent": UA, "Accept": "application/json"}
-    )
+# 这些状态码说明数据源**没有回答「有没有这一条」**，只是暂时不肯干活
+TRANSIENT_STATUS = (429, 500, 502, 503, 504)
+
+
+def _retry_after(e: urllib.error.HTTPError) -> float:
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
-            return True, json.loads(r.read().decode("utf-8", "replace")), ""
-    except urllib.error.HTTPError as e:
-        # 404 等是数据源的明确应答 —— 说明网络是通的
-        return True, None, f"HTTP {e.code}"
-    except Exception as e:  # noqa: BLE001
-        return False, None, f"{type(e).__name__}: {str(e)[:70]}"
+        return float(e.headers.get("Retry-After") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def get_json(url: str, tries: int = 3) -> tuple[bool, dict | None, str]:
+    """返回 (reached, data, error)。
+
+    ★ reached=False 的含义是**无法判定**，不是「查无此项」：
+        · 本机网络不通
+        · 数据源限流 (429) 或服务端故障 (5xx)
+      调用方**必须**把它降级为 WARN。只有 reached=True 且 data 为空，
+      才是数据源明确回答「这一条不在册」。
+
+    429 尤其危险：CrossRef 在高并发反查时会限流，若把 429 当成「明确应答」，
+    工具就会把自己触发的限流，报成「你引用的论文不存在」——正是本文件开头
+    那条设计原则要杜绝的假断言。因此这里对瞬时故障重试并退避。
+    """
+    last = ""
+    for attempt in range(tries):
+        req = urllib.request.Request(
+            url, headers={"User-Agent": UA, "Accept": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+                return True, json.loads(r.read().decode("utf-8", "replace")), ""
+        except urllib.error.HTTPError as e:
+            if e.code in (404, 410):
+                # 数据源的明确应答：网络是通的，这一条确实不在册
+                return True, None, f"HTTP {e.code}"
+            if e.code in TRANSIENT_STATUS and attempt < tries - 1:
+                last = f"HTTP {e.code}"
+                time.sleep(min(_retry_after(e) or 2**attempt, 15))
+                continue
+            return False, None, f"HTTP {e.code}（限流或服务端故障，未能判定）"
+        except Exception as e:  # noqa: BLE001
+            last = f"{type(e).__name__}: {str(e)[:70]}"
+            if attempt < tries - 1:
+                time.sleep(2**attempt)
+                continue
+            return False, None, last
+    return False, None, last
 
 
 # ---------------------------------------------------------------- 数据源
@@ -198,7 +267,7 @@ def lookup_doi(doi: str) -> tuple[str, str, dict]:
     url = f"https://api.crossref.org/works/{safe}?mailto={CONTACT}"
     reached, d, err = get_json(url)
     if not reached:
-        return WARN, f"CrossRef 不可达，无法核验（本机网络问题）: {err}", {}
+        return WARN, f"CrossRef 未能核验（{err}）—— 这不代表该 DOI 不存在，需稍后重跑", {}
     if not d or "message" not in d:
         return FAIL, f"CrossRef 明确应答 {err or '查无此 DOI'}：该 DOI 未在册", {}
     m = d["message"]
@@ -231,10 +300,15 @@ def lookup_pubmed(pmid: str) -> tuple[str, str, dict]:
     )
     reached, d, err = get_json(url)
     if not reached:
-        return WARN, f"PubMed 不可达，无法核验（本机网络问题）: {err}", {}
+        return WARN, f"PubMed 未能核验（{err}）—— 这不代表该 PMID 不存在，需稍后重跑", {}
     if not d or "result" not in d or pmid not in d["result"]:
         return FAIL, f"PubMed 明确应答 {err or '查无此 PMID'}：该 PMID 未在册", {}
     r = d["result"][pmid]
+    # ★ NCBI 对不存在的 PMID 仍会返回该键，只是内容带 error 字段，
+    #   形如 {"uid":"99999999","error":"cannot get document summary"}。
+    #   只判断键是否存在会**放过编造的 PMID**，必须显式检查 error。
+    if r.get("error"):
+        return FAIL, f"PubMed 明确应答「{r['error']}」：该 PMID 未在册", {}
     return OK, "PubMed 命中", {
         "title": r.get("title", ""),
         "container": r.get("fulljournalname", ""),
@@ -466,7 +540,9 @@ def scan(path: str, max_age: int, offline: bool) -> dict:
     else:
         # 流式输出：谁先回来先打印，避免慢站点拖住整个报告
         results = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        # 并发压到 3：CrossRef 对突发请求会返回 429，
+        # 而 429 一旦被误判就是「假报论文不存在」，宁可慢也不要踩限流
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
             futs = {ex.submit(check_one, u, c): i
                     for i, (_, u, c) in enumerate(targets)}
             for f in concurrent.futures.as_completed(futs):
@@ -502,6 +578,64 @@ def scan(path: str, max_age: int, offline: bool) -> dict:
     }
 
 
+def self_test(offline: bool = False) -> int:
+    """回归自检。
+
+    用例全部来自实际踩过的坑：一个会把「本机限流」报成「论文不存在」的核验器，
+    比没有核验器更危险。所以每修掉一个误判，就把它钉成一条用例。
+    """
+    results: list[tuple[bool, str, str]] = []
+
+    def chk(name: str, got, want) -> None:
+        results.append((got == want, name, f"期望 {want!r}，实得 {got!r}"))
+
+    # ① PMID 不得被截断。/99999999999/ 曾被 \d{6,9} 截成前 9 位去反查，
+    #    有机会撞上**另一个真实存在的 PMID**，把编造的 ID 报成通过。
+    chk("classify: 超长 PMID 不截断",
+        classify("https://pubmed.ncbi.nlm.nih.gov/99999999999/"),
+        ("pubmed", "99999999999"))
+    chk("classify: 正常 PMID",
+        classify("https://pubmed.ncbi.nlm.nih.gov/27340683/"),
+        ("pubmed", "27340683"))
+    chk("classify: DOI",
+        classify("https://doi.org/10.1002/mdc3.12269"),
+        ("doi", "10.1002/mdc3.12269"))
+
+    # ② 时效戳要容忍 markdown 加粗（`**核验日期**：…` 曾整篇判不出时效）
+    for s in ("核验日期：2026-09-29", "**核验日期**：2026-09-29",
+              "- **核验日期**： 2026-09-29"):
+        m = VERIFIED_ON_RE.search(s)
+        chk(f"VERIFIED_ON_RE 命中: {s}", m.group(1) if m else None, "2026-09-29")
+
+    # ③ 「禁止使用 Google Scholar」这句规定本身，不是违规
+    rule = "禁止 Google Scholar 动态搜索链接"
+    chk("Google Scholar: 禁止性表述不算违规",
+        bool(GSCHOLAR_MENTION_RE.search(rule) and not PROHIBITION_RE.search(rule)),
+        False)
+    chk("Google Scholar: 真实搜索链接算违规",
+        bool(GSCHOLAR_URL_RE.search("https://scholar.google.com/scholar?q=x")), True)
+
+    if not offline:
+        # ④ 联网方向性用例：假 ID 必须报错，真 ID 必须通过。
+        #    曾出现 CrossRef 429 限流被当成「该 DOI 未在册」，
+        #    以及 NCBI 对不存在 PMID 返回带 error 字段的记录被当成命中。
+        for name, got, want in (
+            ("假 DOI 必须 FAIL", lookup_doi("10.9999/nope-xyz123")[0], FAIL),
+            ("假 PMID 必须 FAIL", lookup_pubmed("99999999")[0], FAIL),
+            ("真 DOI 必须 OK", lookup_doi("10.1002/mdc3.12269")[0], OK),
+            ("真 PMID 必须 OK", lookup_pubmed("27340683")[0], OK),
+        ):
+            chk(name, got, want)
+
+    print("自检用例：")
+    for good, name, detail in results:
+        print(f"  {'✅' if good else '❌'} {name}" + ("" if good else f"   ← {detail}"))
+    bad = [r for r in results if not r[0]]
+    print(f"\n{len(results) - len(bad)}/{len(results)} 通过"
+          + ("（--offline：已跳过联网用例）" if offline else ""))
+    return 1 if bad else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="School-Researcher 引文核验器",
@@ -516,7 +650,12 @@ def main() -> int:
                     help="联网自检失败时仍然继续")
     ap.add_argument("--strict", action="store_true",
                     help="把「无法判定」的 WARN 也视为失败（CI 保守模式）")
+    ap.add_argument("--self-test", action="store_true",
+                    help="运行判定逻辑的回归自检，不扫描文件")
     args = ap.parse_args()
+
+    if args.self_test:
+        return self_test(args.offline)
 
     files = collect_files(args.paths)
     if not files:

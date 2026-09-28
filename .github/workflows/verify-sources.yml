@@ -1,0 +1,35 @@
+name: Verify sources
+
+on:
+  push:
+    paths: ["examples/**", "reports/**", "scripts/**"]
+  pull_request:
+    paths: ["examples/**", "reports/**", "scripts/**"]
+  schedule:
+    # 每周一 06:17 UTC 复检：外部链接会失效，文献不会，但页面会改版
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 检查 SKILL.md description 长度（上限 1024）
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          src = open("SKILL.md", encoding="utf-8").read()
+          m = re.search(r"description:\s*\|(.*?)\n[a-z_]+:", src, re.S)
+          n = len(m.group(1).strip()) if m else 0
+          print(f"description = {n} 字符")
+          sys.exit(1 if n > 1024 else 0)
+          PY
+
+      - name: 核验 dossier 引文与链接
+        run: python3 scripts/verify.py --json examples/ reports/

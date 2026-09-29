@@ -53,6 +53,18 @@ SchoolResearch/
     └── ...
 ```
 
+工作区无需手工搭建，骨架已随仓库提供：
+
+```bash
+./install.sh --workspace ~/SchoolResearch
+```
+
+它会生成上述目录与 `00_选校总表.md`、`inputs/` 下三份档案的**带说明模板**
+（已存在的文件不会被覆盖），并写入一个忽略全部内容的 `.gitignore`——
+工作区含申请人个人信息，不得入库。
+
+若工作区尚未建立，先执行此命令，再开始 Step 1。
+
 ---
 
 ## 3. 七大执行铁律 (Non-Negotiable Constraints)

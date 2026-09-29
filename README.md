@@ -106,19 +106,26 @@ SchoolResearch/
 
 ```
 ├── SKILL.md                         # Skill 定义（Claude / Gemini 等按需自动挂载）
-├── scripts/verify.py                # 引文核验器（本项目的核心），含 --self-test
-├── scripts/check_skill.py           # 校验 SKILL.md description 的 1024 字符上限
+├── install.sh                       # 安装脚本：技能安装 + 工作区脚手架
+├── scripts/
+│   ├── verify.py                    # 引文核验器（本项目的核心），含 --self-test
+│   └── check_limits.py              # 校验各平台提示词的长度上限
 ├── agent_rules/                     # 多平台接入说明
 │   └── SYSTEM_PROMPT.md             # 【权威规则源】其余文件均为其薄封装
 ├── references/verification_standards.md  # 信源核验标准
-├── templates/master_dossier_template.md  # 产出模板（含核验戳字段）
+├── templates/
+│   ├── master_dossier_template.md   # 产出模板（含核验戳字段）
+│   └── workspace/                   # 工作区骨架（install.sh --workspace 使用）
 └── examples/                        # 脱敏后的范例档案
 ```
 
-> **单一权威源原则**：所有执行规则以 `agent_rules/SYSTEM_PROMPT.md` 为准。
-> 同理，校验逻辑也只有一份实现——正则内联复制到多处，正是本仓库真实踩过的坑
-> （见 `scripts/check_skill.py` 的文件头说明）。
+> **单一权威源原则**：所有执行规则以 `agent_rules/SYSTEM_PROMPT.md` 为准；
+> 所有长度上限校验以 `scripts/check_limits.py` 为准。
 > 其余各平台文件只说明"如何接入"，不重复规则内容——避免同一条铁律被复述四五遍后各自漂移。
+>
+> 这条原则不是洁癖，是本仓库真实踩过的坑：同一段校验正则曾被内联在 CI、文档、
+> install.sh 三处，三份各错各的，导致"超限就报错"的闸门从未生效。
+> 重复的不只是代码，是**错误**。
 
 ---
 
@@ -126,27 +133,99 @@ SchoolResearch/
 
 配置文件均位于 `agent_rules/`，各平台接入方式详见对应文件：
 
-| 平台 | 配置文件 | 要点 |
-| :--- | :--- | :--- |
-| **Anthropic Claude** (Claude Code / Desktop / API) | [`agent_rules/CLAUDE.md`](./agent_rules/CLAUDE.md) | 可作为 Claude Code Skill 安装至 `~/.claude/skills/` |
-| **OpenAI Codex / ChatGPT** | [`agent_rules/CODEX.md`](./agent_rules/CODEX.md) | 含适配 1500 字符上限的压缩版提示词 |
-| **Google Gemini / Antigravity** | [`agent_rules/GEMINI.md`](./agent_rules/GEMINI.md) | 使用 `google-genai` 新 SDK |
-| **DeepSeek (V3 / R1)** | [`agent_rules/DEEPSEEK.md`](./agent_rules/DEEPSEEK.md) | 推理模型只做论证结构，事实层交给 `verify.py` |
+| 平台 | 配置文件 | 安装方式 | 说明 |
+| :--- | :--- | :--- | :--- |
+| **Claude Code** | [`CLAUDE.md`](./agent_rules/CLAUDE.md) | `--platform claude` | 装到 `~/.claude/skills/`，自动发现 |
+| **Claude Desktop** | [`CLAUDE.md`](./agent_rules/CLAUDE.md) | 手动 | 把规则源挂进 Project Knowledge |
+| **Antigravity / Gemini CLI** | [`GEMINI.md`](./agent_rules/GEMINI.md) | `--platform gemini` | 装到工作区 `.agent/skills/` |
+| **Cursor** | [`SYSTEM_PROMPT.md`](./agent_rules/SYSTEM_PROMPT.md) | `--platform cursor` | 写入 `.cursor/rules/*.mdc` |
+| **Windsurf** | [`SYSTEM_PROMPT.md`](./agent_rules/SYSTEM_PROMPT.md) | `--platform windsurf` | 写入 `.windsurf/rules/` |
+| **ChatGPT** | [`CODEX.md`](./agent_rules/CODEX.md) | `--platform chatgpt` | 生成 1281 字符粘贴版（上限 1500） |
+| **OpenAI Codex** | [`CODEX.md`](./agent_rules/CODEX.md) | `--platform codex` | 同上 |
+| **DeepSeek** | [`DEEPSEEK.md`](./agent_rules/DEEPSEEK.md) | `--platform deepseek` | 附本地部署约束：事实层必须外部取数 |
+| **任意 OpenAI 兼容端点** | [`SYSTEM_PROMPT.md`](./agent_rules/SYSTEM_PROMPT.md) | `--platform generic` | 生成完整 SYSTEM_PROMPT |
+
+平台分两类，`./install.sh --list-platforms` 会标明：
+
+- **目录型**（claude / gemini / cursor / windsurf）—— 平台有规则目录约定，脚本把文件装进去
+- **提示词型**（chatgpt / codex / deepseek / generic）—— 平台没有目录约定，脚本生成一份可直接粘贴的提示词
+
+> **唯一真正跨平台的东西是核验器。** 换个模型，提示词形态会变；
+> 但 `verify.py` 在任何平台上都跑在同一台机器上，判定同一份档案。
+> 这不是巧合——把事实层从模型里拿出来，正是本项目能在多个平台间迁移的原因。
+
+各平台的 API 调用示例（Anthropic / OpenAI / Google GenAI / DeepSeek）见对应文件。
 
 ---
 
 ## 快速开始
 
+### 0. 先看它怎么工作（60 秒，不用安装）
+
 ```bash
 git clone https://github.com/Rex188/school-researcher.git
 cd school-researcher
-
-# 1. 核验范例档案（可直接看到核验器如何判定每一条引文）
 python3 scripts/verify.py examples/
-
-# 2. 用你自己的产出替换 examples/，接入 CI
-python3 scripts/verify.py reports/ || exit 1
 ```
+
+这会核验仓库里那份真实的 JHU Peabody 范例档案 —— 每一条引文都会列出
+**数据源实际返回的标题与卷期页**，你可以直接和文中写的逐字比对。
+加 `--html report.html` 可另存一份可视化报告。
+
+### 1. 安装技能
+
+```bash
+./install.sh                      # Claude Code（默认）
+./install.sh --platform gemini    # Antigravity / Gemini CLI
+./install.sh --list-platforms     # 看看还有哪些平台
+```
+
+### 2. 建立工作区
+
+```bash
+./install.sh --workspace ~/SchoolResearch
+```
+
+生成如下骨架（**已存在的文件不会被覆盖**）：
+
+```
+SchoolResearch/
+├── 00_选校总表.md                        # 导航与批次台账（含状态列）
+├── inputs/
+│   ├── 01_申请者画像与叙事资产总档案.md      # ← 先填这个
+│   ├── common_app_personal_statement.md  # ← 主文书定稿全文
+│   └── 选校表.md                          # 原始诉求草案
+└── reports/                              # 产出目录（按学校分文件夹）
+```
+
+工作区自带 `.gitignore`（忽略全部内容）——里面是你的个人信息，不要提交到公开仓库。
+
+### 3. 填三个文件，然后开工
+
+1. `inputs/01_申请者画像与叙事资产总档案.md` —— 关键是第 1 节「主文书核心矛盾」：
+   写清主文书提出了什么**未决的**问题。所有 Why School 都要成为它的续篇，
+   这一节决定产出质量的上限。
+2. `inputs/common_app_personal_statement.md` —— 粘贴主文书**逐字全文**（不要摘要）。
+3. `00_选校总表.md` —— 锁定第一批 3 所。注意是**硬限 3 所**，Agent 会拒绝第 4 所。
+
+然后对 Agent 说：
+
+```
+读 agent_rules/SYSTEM_PROMPT.md，对 00_选校总表.md 里的第一批执行 Step 1–9。
+```
+
+### 4. 核验与交付
+
+```bash
+python3 scripts/verify.py reports/ --html report.html
+echo "退出码: $?"      # 非 0 即不可交付
+```
+
+**退出码为 0 之前，不要在任何地方说"来源已核验"。** 那句话是关于证据状态的事实断言，
+没跑过就是编的 —— 这正是整个项目要解决的问题。
+
+> ⚠️ 项（反爬 403、限流、超时）需要**人工点开确认**，然后在档案的「核验方式」列
+> 改写为 `反爬待人工`。它们不是错误，但也不等于通过。
 
 ---
 

@@ -20,8 +20,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: 检查 SKILL.md description 长度（上限 1024）
-        run: python3 scripts/check_skill.py
+      - name: 校验各平台提示词长度上限
+        run: python3 scripts/check_limits.py
 
       - name: 核验器自身的回归自检
         # 先证明核验器不会误判，再用它去判别人

@@ -23,12 +23,14 @@ cp -r SKILL.md scripts references templates agent_rules \
 > Skill 无法被正确加载。修改后请自检：
 >
 > ```bash
-> python3 scripts/check_skill.py
+> python3 scripts/check_limits.py
 > ```
 >
-> （此前文档与 CI 里各写了一份内联正则，两份都写错了——正则要求 description 块后
-> 紧跟 `[a-z]+:`，而块标量后面其实是 frontmatter 结束符 `---`，于是永远匹配不到、
-> 永远报 0 字符，"超限报错" 的闸门从未生效。现在校验逻辑只有 `check_skill.py` 一份。）
+> 该脚本同时校验 ChatGPT Custom Instructions 的 1500 字符上限。
+> （此前这段检查内联在 CI、文档、install.sh 三处，各写一遍正则、各错各的——
+> 那份正则要求 description 块后紧跟 `[a-z]+:`，而块标量后面其实是 frontmatter
+> 结束符 `---`，于是永远匹配不到、永远报 0 字符，"超限报错" 的闸门从未生效。
+> 现在校验逻辑只有 `scripts/check_limits.py` 一份。）
 
 ---
 

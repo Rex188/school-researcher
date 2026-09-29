@@ -16,6 +16,8 @@ verify.py — 审计级引文核验器 (School-Researcher)
             一个因为本机断网就宣布"你引用的论文页面不存在"的工具，
             比没有工具更危险。因此网络类异常一律降级为 ⚠️ 无法判定，
             且核验前先做联网自检，自检不过直接中止。
+            自检失败时会点名代理环境变量并探测其端口——「代理软件退了、
+            环境变量还留着」是最常见的成因，不说破就会被读成「网站都挂了」。
 
 用法:
     python3 scripts/verify.py                  # 扫描 examples/ 与 reports/
@@ -473,6 +475,42 @@ def connectivity_ok() -> tuple[bool, str]:
     return False, last
 
 
+# 环境变量里挂着代理、但代理进程早已退出 —— 这是「网络明明能用，脚本却全报
+# 连接失败」最常见的成因。若不点名，用户会把本机配置问题读成「这些网站都挂了」，
+# 然后去"修正"一批本来正确的链接，正是本工具最该避免的那种误判。
+PROXY_ENV_VARS = ("https_proxy", "http_proxy", "all_proxy",
+                  "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY")
+
+
+def proxy_env_report() -> list[str]:
+    """列出已生效的代理环境变量，并探测其端口是否真的有人监听。"""
+    out: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for var in PROXY_ENV_VARS:
+        val = os.environ.get(var)
+        if not val:
+            continue
+        key = (var.lower(), val)
+        if key in seen:      # http_proxy 与 HTTP_PROXY 常设成同一值，去重
+            continue
+        seen.add(key)
+        try:
+            parsed = urllib.parse.urlparse(val)
+            host, port = parsed.hostname, parsed.port
+        except ValueError:   # 端口非法（如 >65535）
+            host = port = None
+        if not host or not port:
+            out.append(f"   {var} = {val}")
+            continue
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                state = "端口有响应"
+        except OSError as e:
+            state = f"⛔ 端口无人监听（{type(e).__name__}）"
+        out.append(f"   {var} = {val}  → {state}")
+    return out
+
+
 def print_result(r: dict) -> None:
     icon = {OK: "✅", WARN: "⚠️ ", FAIL: "❌"}[r["status"]]
     print(f"  {icon} {r['url']}")
@@ -837,6 +875,29 @@ def self_test(offline: bool = False) -> int:
     chk("find_citation: 期刊条目取到自己的卷期页", find_citation(1, doc), "47(2), 215-242")
     chk("find_citation: 书籍章节不认领上一条的卷期页", find_citation(4, doc), None)
 
+    # ③ 代理探测：环境变量里的代理若指向一个没人监听的端口，自检失败时必须
+    #    把它点出来。否则用户会把「本机代理已死」读成「这些网站都挂了」，
+    #    进而去改一批本来正确的链接 —— 假 ❌ 比漏报更糟。
+    saved = {v: os.environ.get(v) for v in PROXY_ENV_VARS}
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        dead_port = s.getsockname()[1]      # 占位后立刻释放 → 该端口无人监听
+    try:
+        for v in PROXY_ENV_VARS:
+            os.environ.pop(v, None)
+        chk("proxy_env_report: 未设代理时不出声", proxy_env_report(), [])
+        os.environ["https_proxy"] = f"http://127.0.0.1:{dead_port}"
+        os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{dead_port}"
+        rep = proxy_env_report()
+        chk("proxy_env_report: 大小写同值只列一次", len(rep), 1)
+        chk("proxy_env_report: 死代理判为端口无人监听", "无人监听" in rep[0], True)
+    finally:
+        for v, val in saved.items():
+            if val is None:
+                os.environ.pop(v, None)
+            else:
+                os.environ[v] = val
+
     if not offline:
         # ④ 联网方向性用例：假 ID 必须报错，真 ID 必须通过。
         #    曾出现 CrossRef 429 限流被当成「该 DOI 未在册」，
@@ -892,6 +953,16 @@ def main() -> int:
             print("=" * 62)
             print("⛔ 联网自检未通过 —— 本次核验的网络类结论不可信")
             print(f"   原因: {net_msg}")
+            proxies = proxy_env_report()
+            if proxies:
+                print()
+                print("   本机检测到代理设置，但代理进程可能已经退出：")
+                for line in proxies:
+                    print(line)
+                print("   ↑ 若显示「端口无人监听」，说明所有请求都被送去了一个死地址，")
+                print("     这时网站本身多半是好的 —— 不要据此去改链接。")
+                print("     修法：重启终端，或把代理软件关掉再打开。")
+            print()
             print("   本机网络或代理不可用时，任何「链接失效」都可能是误报。")
             print("   请检查网络 / 代理设置后重跑，或改用 --offline 只做格式与时效检查。")
             print("=" * 62)

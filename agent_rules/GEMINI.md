@@ -52,8 +52,8 @@ response = client.models.generate_content(
         top_p=0.95,
     ),
     contents=(
-        "执行选校总表中 Swarthmore College 的 Step 4-8 深度调研，"
-        "重点挖掘哲学与音乐系小众研讨课、教授专著及永久 DOI 链接。"
+        "执行选校总表中 Swarthmore College 的 Step 4-10 深度调研，"
+        "重点挖掘哲学与音乐系小众研讨课、建校宗旨与本科研究机会、教授专著及永久 DOI 链接。"
     ),
 )
 

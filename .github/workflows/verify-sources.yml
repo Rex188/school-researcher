@@ -23,6 +23,17 @@ jobs:
       - name: 校验各平台提示词长度上限
         run: python3 scripts/check_limits.py
 
+      - name: 检查 install.sh 的变量名粘连
+        # $VAR 紧跟全角字符时，bash 会把多字节字节并进变量名，
+        # 在 set -u 下报 unbound variable。此 bug 已在本文件出现两次
+        # （`$TGT_REAL）` 与 `$sop_src，`），故钉成闸门。
+        run: |
+          if grep -nP '\$[A-Za-z_][A-Za-z0-9_]*[\x{4e00}-\x{9fff}\x{3000}-\x{303f}\x{ff00}-\x{ffef}]' install.sh; then
+            echo "::error::变量名后紧跟全角字符，须写成 \${VAR}（详见 install.sh 头部说明）"
+            exit 1
+          fi
+          echo "✅ install.sh 无变量名粘连"
+
       - name: 核验器自身的回归自检
         # 先证明核验器不会误判，再用它去判别人
         run: python3 scripts/verify.py --self-test

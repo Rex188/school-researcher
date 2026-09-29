@@ -116,6 +116,22 @@ scaffold_workspace() {
         fi
     done < <(find "$src" -type f -print0)
 
+    # SOP 手册来自 references/（单一权威源），此处只做下发；已存在则保留用户批注
+    local sop_src="$SCRIPT_DIR/references/sop_school_research.md"
+    if [[ ! -e "$ws/SOP for School Research.md" ]]; then
+        if [[ -f "$sop_src" ]]; then
+            cp "$sop_src" "$ws/SOP for School Research.md"
+            echo "  创建: SOP for School Research.md"
+            created=$((created + 1))
+        else
+            echo "  跳过（源码中不存在）: $sop_src" >&2
+        fi
+    else
+        echo "  跳过（已存在，不覆盖）: SOP for School Research.md"
+        echo "        └─ 权威新版在 ${sop_src}，可自行 diff 合并"
+        skipped=$((skipped + 1))
+    fi
+
     # 工作区不应被提交到公开仓库（含申请人个人信息）
     if [[ ! -e "$ws/.gitignore" ]]; then
         printf '# 申请人个人信息，禁止入库\n*\n' > "$ws/.gitignore"
@@ -127,11 +143,15 @@ scaffold_workspace() {
     echo "工作区就绪: $ws  （新建 $created 项，跳过 $skipped 项）"
     echo
     echo "接下来:"
-    echo "  1. 填 $ws/inputs/01_申请者画像与叙事资产总档案.md"
-    echo "  2. 把主文书全文放进 $ws/inputs/common_app_personal_statement.md"
-    echo "  3. 在 $ws/00_选校总表.md 里锁定第一批 3 所"
-    echo "  4. 让 Agent 按 SKILL.md 的 Step 1-9 执行"
-    echo "  5. 核验: python3 scripts/verify.py \"$ws/reports/\""
+    echo "  1. 【必需①】填 $ws/inputs/选校表.md"
+    echo "  2. 【必需②】填 $ws/inputs/灵魂发问.md 与 $ws/inputs/个人信息收集表.md"
+    echo "  3. 把主文书全文放进 $ws/inputs/common_app_personal_statement.md"
+    echo "  4. 整合进 $ws/inputs/01_申请者画像与叙事资产总档案.md"
+    echo "  5. 在 $ws/00_选校总表.md 里锁定第一批 3 所"
+    echo "  6. 让 Agent 按 SKILL.md 的 Step 1-12 执行（逐步规范见 SOP for School Research.md）"
+    echo "  7. 核验: python3 scripts/verify.py \"$ws/reports/\""
+    echo
+    echo "  注：①② 未填时 Agent 会拒绝开工（铁律 1）——缺输入产出的档案对任何学校都不成立。"
 }
 
 if [[ -n "$WORKSPACE" ]]; then

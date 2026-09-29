@@ -52,7 +52,7 @@ python3 scripts/verify.py --self-test       # 先证明核验器自己不误判
 | 超时 / 握手失败 / 连接被拒 | 无法区分是源挂了还是本机网络问题 |
 | DNS 解析失败、TLS 证书域名不符 | 这两个是**可信的**失效信号，仍判 ❌ |
 
-判定逻辑由 `--self-test` 的 12 条回归用例钉死；CI 会先跑自检，再用它去判别人的档案。
+判定逻辑由 `--self-test` 的回归用例钉死（每修掉一个误判就补一条）；CI 会先跑自检，再用它去判别人的档案。
 
 > 为什么需要这个？因为引文的**页码**和教授的**任职单位**这类事实，
 > 恰恰是模型最容易"写得看起来很对"的地方：论文真实存在，但卷期页是编的；
@@ -83,6 +83,10 @@ python3 scripts/verify.py --self-test       # 先证明核验器自己不误判
    且**任职单位必须单独核验**——把外校教授当作目标院校的文书锚点是硬伤。
 7. **文书大纲去 AI 化 (De-AI-fied Fact Blueprints)**：
    删去一切感性套话，以**纯事实 Bullet Points** 交代场景冲突、认知转变、教授文献承接与校内外落地行动。
+8. **信源分层，分的是权限不是可信度 (Source Tiers)**：
+   一手官方与 DOI/PubMed 可作论据；Wikipedia 与 Fiske Guide 只能**下探**，不得直接引用；
+   Niche / 论坛属**主观层**，必须标注且不得单独支撑事实，且**只能在官网穿透之后**再读——
+   先读论坛会被它的偏见锚定，之后读官网就只会去找印证。详见 `references/verification_standards.md` §7。
 
 ---
 
@@ -112,7 +116,9 @@ SchoolResearch/
 │   └── check_limits.py              # 校验各平台提示词的长度上限
 ├── agent_rules/                     # 多平台接入说明
 │   └── SYSTEM_PROMPT.md             # 【权威规则源】其余文件均为其薄封装
-├── references/verification_standards.md  # 信源核验标准
+├── references/
+│   ├── sop_school_research.md       # 【程序权威源】十二步 SOP + 信源分层
+│   └── verification_standards.md    # 信源核验标准
 ├── templates/
 │   ├── master_dossier_template.md   # 产出模板（含核验戳字段）
 │   └── workspace/                   # 工作区骨架（install.sh --workspace 使用）
@@ -129,6 +135,35 @@ SchoolResearch/
 
 ---
 
+## 十二步 SOP：官网穿透 + 核验回路
+
+程序规范见 **[`references/sop_school_research.md`](./references/sop_school_research.md)**（工作区里会下发为 `SOP for School Research.md`）。
+
+它回答两个不同的问题，分别由两方定义，合并成一套流程：
+
+- **采集骨架**（读什么、按什么顺序读、每步产出什么原材料）整理自指导老师提供的
+  《如何做 School Research 的一封信》。官网才是主战场，且要按固定顺序读——
+  `About/Mission → Academics 课程目录 → Research 本科研究机会 → Resources/Student Life → People`。
+  **课程目录要记到课号级**；**本科生研究机会要单独查**（准入时间、先修课、前人课题范例）。
+- **证据标准**（哪些事实必须被证明、怎么证明）由本仓库的核验回路定义。
+
+| 阶段 | Step | 名称 |
+| :--- | :--- | :--- |
+| **A 自省与选校** | 1–3 | 选校总表 → 自我调查（学习风格 / 未来倾向 / 最在乎的 3 个特质）→ 基础资料与 3 个关键词 |
+| **B 官方一手穿透** | 4–9 | Prompt 逐字审计 → 建校宗旨 → **课程目录（课号级）** → **本科研究机会** → 教授文献溯源 → 社团与校园生态 |
+| **C 交叉验证** | 10 | 第三方学生视角与风格匹配自检（标注主观，且必须在官网之后） |
+| **D 成文与核验** | 11–12 | 5–10 个匹配点 → 因果链大纲 → Master Dossier → `verify.py` 回写 |
+
+**一条贯穿全流程的反面清单**（出现即判无效论据）：排名高、声誉好、地理位置、
+"课程范围广泛"、"师资雄厚"、官网宣传语。区别只在"具体"二字——
+
+> 你有**这门课**（课号 `XXXX 199`）能让我学到 xxxx；
+> 你有**这位导师**（姓名 xxx），方向是 yyyy，而我做的是 zzzz，我想延伸到 yyyy。
+
+这些细节，只能来自 Step 5–9 的采集。这也是为什么 SOP 把它拆成十二步而不是一句话。
+
+---
+
 ## 多 Agent 平台全栈接入 (Multi-Agent Integration)
 
 配置文件均位于 `agent_rules/`，各平台接入方式详见对应文件：
@@ -140,7 +175,7 @@ SchoolResearch/
 | **Antigravity / Gemini CLI** | [`GEMINI.md`](./agent_rules/GEMINI.md) | `--platform gemini` | 装到工作区 `.agent/skills/` |
 | **Cursor** | [`SYSTEM_PROMPT.md`](./agent_rules/SYSTEM_PROMPT.md) | `--platform cursor` | 写入 `.cursor/rules/*.mdc` |
 | **Windsurf** | [`SYSTEM_PROMPT.md`](./agent_rules/SYSTEM_PROMPT.md) | `--platform windsurf` | 写入 `.windsurf/rules/` |
-| **ChatGPT** | [`CODEX.md`](./agent_rules/CODEX.md) | `--platform chatgpt` | 生成 1281 字符粘贴版（上限 1500） |
+| **ChatGPT** | [`CODEX.md`](./agent_rules/CODEX.md) | `--platform chatgpt` | 生成 Custom Instructions 粘贴版（1500 字符硬上限，超限即中止） |
 | **OpenAI Codex** | [`CODEX.md`](./agent_rules/CODEX.md) | `--platform codex` | 同上 |
 | **DeepSeek** | [`DEEPSEEK.md`](./agent_rules/DEEPSEEK.md) | `--platform deepseek` | 附本地部署约束：事实层必须外部取数 |
 | **任意 OpenAI 兼容端点** | [`SYSTEM_PROMPT.md`](./agent_rules/SYSTEM_PROMPT.md) | `--platform generic` | 生成完整 SYSTEM_PROMPT |
@@ -191,27 +226,43 @@ python3 scripts/verify.py examples/
 ```
 SchoolResearch/
 ├── 00_选校总表.md                        # 导航与批次台账（含状态列）
+├── SOP for School Research.md            # 十二步作业规范（可点选勾选的 checklist）
 ├── inputs/
-│   ├── 01_申请者画像与叙事资产总档案.md      # ← 先填这个
-│   ├── common_app_personal_statement.md  # ← 主文书定稿全文
-│   └── 选校表.md                          # 原始诉求草案
+│   ├── 选校表.md                          # ① 必需：目标院校名单与专业诉求
+│   ├── 灵魂发问.md                        # ② 必需：人格特征
+│   ├── 个人信息收集表.md                   # ② 必需：基本信息
+│   ├── 01_申请者画像与叙事资产总档案.md      # 由 ①② + 主文书整合而成
+│   └── common_app_personal_statement.md  # 主文书定稿全文
 └── reports/                              # 产出目录（按学校分文件夹）
 ```
 
 工作区自带 `.gitignore`（忽略全部内容）——里面是你的个人信息，不要提交到公开仓库。
 
-### 3. 填三个文件，然后开工
+### 3. 填必需输入，然后开工
 
-1. `inputs/01_申请者画像与叙事资产总档案.md` —— 关键是第 1 节「主文书核心矛盾」：
-   写清主文书提出了什么**未决的**问题。所有 Why School 都要成为它的续篇，
-   这一节决定产出质量的上限。
-2. `inputs/common_app_personal_statement.md` —— 粘贴主文书**逐字全文**（不要摘要）。
-3. `00_选校总表.md` —— 锁定第一批 3 所。注意是**硬限 3 所**，Agent 会拒绝第 4 所。
+> [!IMPORTANT]
+> **两样输入是准入门槛（SKILL.md 铁律 1）。缺任何一样，Agent 会直接拒绝开工**——
+> 不猜、不用通用模板、不"先做一版看看"。因为 Why School 的实质是回答"我是谁"：
+> 没有选校表就没有检索对象；没有人格与背景，写出来的每一句都成立，
+> 因而**对任何学校都不成立**。缺输入时开工，产出的不是半成品，**是负资产：它看起来像成品**。
+
+1. `inputs/选校表.md`（**必需 ①**）—— 目标院校名单与专业诉求，至少 1 所。
+2. `inputs/灵魂发问.md`（**必需 ②**，人格特征）+ `inputs/个人信息收集表.md`（**必需 ②**，基本信息）。
+   填写要点：**不要写形容词，要写事件**。「我很有好奇心」没有用；
+   「初三那年为了搞清一个音频问题，我把同一段录音拆了 40 遍」才有用。
+3. `inputs/01_申请者画像与叙事资产总档案.md` —— 把上面两份 + 主文书整合进来。两个关键节：
+   - §1「主文书核心矛盾」：主文书提出了什么**未决的**问题。所有 Why School 都要成为它的续篇。
+   - §2「自我调查」：学习风格 / 未来倾向 / 最在乎的 3 个大学特质。
+     这三项是 Agent 检索时的**筛选标准**——没有它，官网穿透会退化成漫无目的的信息收集。
+     注意必须是**可判定的**表述：「我喜欢小班」不可判定，「我在 40 人以下的研讨课里产出
+     明显高于 200 人讲座」可判定。
+4. `inputs/common_app_personal_statement.md` —— 粘贴主文书**逐字全文**（不要摘要）。
+5. `00_选校总表.md` —— 锁定第一批 3 所。注意是**硬限 3 所**，Agent 会拒绝第 4 所。
 
 然后对 Agent 说：
 
 ```
-读 agent_rules/SYSTEM_PROMPT.md，对 00_选校总表.md 里的第一批执行 Step 1–9。
+读 agent_rules/SYSTEM_PROMPT.md，对 00_选校总表.md 里的第一批执行 Step 1–12。
 ```
 
 ### 4. 核验与交付

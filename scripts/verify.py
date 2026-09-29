@@ -342,13 +342,37 @@ def classify(url: str) -> tuple[str, str]:
     return "web", url
 
 
+def _fmt_cite(m: re.Match) -> str:
+    vol, iss, p1, p2 = m.group("vol"), m.group("iss"), m.group("p1"), m.group("p2")
+    return f"{vol}{f'({iss})' if iss else ''}, {p1}-{p2}"
+
+
+# 工具自身的登记行，不是引文。它们在「核验方式」里常把卷期页重复抄一遍，
+# 那是登记，不是出处；采信即误判。
+ANNOTATION_RE = re.compile(r"核验方式|核验日期|verified_on|核驗")
+
+
 def find_citation(line_no: int, lines: list[str]) -> str | None:
-    """向上回溯 3 行找 "卷(期), 页-页" 形式的引文。"""
-    for i in range(line_no, max(-1, line_no - 4), -1):
-        m = CITE_RE.search(lines[i])
-        if m:
-            vol, iss, p1, p2 = m.group("vol"), m.group("iss"), m.group("p1"), m.group("p2")
-            return f"{vol}{f'({iss})' if iss else ''}, {p1}-{p2}"
+    """取本条 DOI 上方最近一条**内容行**里的 "卷(期), 页-页" 引文。
+
+    两个都不能省的约束，都踩过：
+      · 跳过「核验方式 / 核验日期」登记行——它们会重复抄写卷期页。曾因此把
+        书籍章节的 196–213 配成上一篇期刊的 47(2), 215–242，报出假 ❌，
+        而假 ❌ 会让人去"修正"一条本来正确的引用。
+      · 遇到第一条内容行就停，不继续向上找——否则本身没有卷期的条目
+        （书籍章节、会议论文）会一路回溯到上面**无关**的期刊引文。
+    """
+    m = CITE_RE.search(lines[line_no])
+    if m:
+        return _fmt_cite(m)          # 引文与 DOI 写在同一行
+    i = line_no - 1
+    while i >= 0 and i > line_no - 6:
+        s = lines[i]
+        if not s.strip() or ANNOTATION_RE.search(s):
+            i -= 1
+            continue
+        m = CITE_RE.search(s)
+        return _fmt_cite(m) if m else None   # 最近的内容行无卷期 → 本条无卷期可比
     return None
 
 
@@ -597,7 +621,13 @@ def render_html(reports: list[dict], total: dict, source: str) -> str:
         if rep.get("gscholar"):
             parts.append(
                 f"<div class='note' style='border-color:var(--fail)'>"
-                f"❌ 违反铁律 4：出现 {rep['gscholar']} 处 Google Scholar 引用</div>"
+                f"❌ 违反铁律 4：出现 {rep['gscholar']} 处 Google Scholar 动态搜索链接</div>"
+            )
+        if rep.get("gscholar_mention"):
+            parts.append(
+                f"<div class='note'>"
+                f"⚠️ {rep['gscholar_mention']} 处把 Google Scholar 列为核验基准"
+                f"（非链接；事实层应以 DOI / PubMed 为准）</div>"
             )
         if rep.get("stale"):
             parts.append(
@@ -666,13 +696,19 @@ def scan(path: str, max_age: int, offline: bool) -> dict:
         if age > max_age:
             stale.append((ln, s, age))
 
-    # --- Google Scholar 违规（区分「引用」与「禁止引用的规定本身」）
-    gs = []
+    # --- Google Scholar（铁律 4 禁的是**动态搜索链接**）
+    #     三种情形必须分开，早前版本把它们合并报成「出现引用」，
+    #     结果把一句列举核验基准的散文误判成引用违规：
+    #       ① scholar.google.com/scholar? 链接          → FAIL（真正违规）
+    #       ② 「严禁使用 Google Scholar」这句规定本身    → 不报（规则自述，必误判）
+    #       ③ 把 Scholar 列为核验基准的散文（无链接）    → WARN（不是引用，但与
+    #          「以 DOI/PubMed 为准」的取向冲突，值得提醒，不该判失败）
+    gs_url, gs_mention = [], []
     for ln, l in enumerate(lines, 1):
         if GSCHOLAR_URL_RE.search(l):
-            gs.append((ln, l.strip()))
+            gs_url.append((ln, l.strip()))
         elif GSCHOLAR_MENTION_RE.search(l) and not PROHIBITION_RE.search(l):
-            gs.append((ln, l.strip()))
+            gs_mention.append((ln, l.strip()))
 
     # --- 链接
     targets = []
@@ -711,11 +747,17 @@ def scan(path: str, max_age: int, offline: bool) -> dict:
     for r in results:
         counts[r["status"]] += 1
 
-    if gs:
-        print(f"  ❌ 违反铁律 4：出现 Google Scholar 引用（{len(gs)} 处）")
-        for ln, t in gs[:3]:
+    if gs_url:
+        print(f"  ❌ 违反铁律 4：出现 Google Scholar 动态搜索链接（{len(gs_url)} 处）")
+        for ln, t in gs_url[:3]:
             print(f"      L{ln}: {t[:80]}")
         counts[FAIL] += 1
+    if gs_mention:
+        print(f"  ⚠️  把 Google Scholar 列为核验基准（{len(gs_mention)} 处，非链接；"
+              f"事实层应以 DOI / PubMed 为准）")
+        for ln, t in gs_mention[:3]:
+            print(f"      L{ln}: {t[:80]}")
+        counts[WARN] += len(gs_mention)
     if stale:
         print(f"  ⚠️  时效戳超过 {max_age} 天（{len(stale)} 处）")
         for ln, s, age in stale[:5]:
@@ -728,7 +770,8 @@ def scan(path: str, max_age: int, offline: bool) -> dict:
         "file": path,
         "links": results,
         "counts": counts,
-        "gscholar": len(gs),
+        "gscholar": len(gs_url),
+        "gscholar_mention": len(gs_mention),
         "stale": stale,
         "stamps": len(stamps),
     }
@@ -770,6 +813,29 @@ def self_test(offline: bool = False) -> int:
         False)
     chk("Google Scholar: 真实搜索链接算违规",
         bool(GSCHOLAR_URL_RE.search("https://scholar.google.com/scholar?q=x")), True)
+    # ④ 「把 Scholar 列为核验基准」是散文列举，不是引用。
+    #    曾整句误判成「出现 Google Scholar 引用」并计入 FAIL——
+    #    而该行恰恰是在陈述核验标准，判它违规等于惩罚一句规范说明。
+    basis = "> **核验基准**：全要素官方可溯源（官网 / Google Scholar / DOI / 地方报道）"
+    chk("Google Scholar: 列举核验基准 → 不是链接违规",
+        bool(GSCHOLAR_URL_RE.search(basis)), False)
+    chk("Google Scholar: 列举核验基准 → 仍应提示（非禁止语境）",
+        bool(GSCHOLAR_MENTION_RE.search(basis) and not PROHIBITION_RE.search(basis)), True)
+
+    # ⑤ DOI 的卷期页必须取自**本条**上方最近的内容行。书籍章节、会议论文本身
+    #    没有卷期，不得一路回溯上去认领前面期刊的页码。曾因此报出假 ❌——
+    #    而假 ❌ 会让人去"修正"一条本来正确的引用，比漏报更糟。
+    doc = [
+        '- Helmuth, M., & Schedel, M. (2022). *"Links between sonification and generative music."* '
+        '*Interdisciplinary Science Reviews*, 47(2), 215–242.',
+        '   - [永久 DOI 直链](https://doi.org/10.1080/03080188.2022.2035106)',
+        '3. **著作章节**：Green, S., & Schedel, M. (2022). *"Cynosuric Bodies."* '
+        'In *The Body in Sound, Music and Performance*, Focal Press, 196–213.',
+        '   - **核验方式**：DOI 反查（Taylor & Francis, 47(2), 215–242, 2022）',
+        '   - [永久 DOI 直链](https://doi.org/10.4324/9781003008217-19)',
+    ]
+    chk("find_citation: 期刊条目取到自己的卷期页", find_citation(1, doc), "47(2), 215-242")
+    chk("find_citation: 书籍章节不认领上一条的卷期页", find_citation(4, doc), None)
 
     if not offline:
         # ④ 联网方向性用例：假 ID 必须报错，真 ID 必须通过。

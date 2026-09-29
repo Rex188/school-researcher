@@ -2,5 +2,9 @@ __pycache__/
 *.py[cod]
 .DS_Store
 
+# verify.py --html 的生成物（CI 会作为 artifact 上传，不入库）
+verify-report.html
+**/核验报告.html
+
 # 个人实际申请资料不应入库
 SchoolResearch/

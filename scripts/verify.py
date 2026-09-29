@@ -53,6 +53,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from html import escape as esc
 
 # ---------------------------------------------------------------- 配置
 
@@ -461,6 +462,161 @@ def print_result(r: dict) -> None:
               f"{d.get('pages','')} · {d.get('year','')}")
 
 
+# ---------------------------------------------------------------- HTML 报告
+
+HTML_CSS = """
+:root{--bg:#fbfaf8;--fg:#1c1b19;--dim:#6b675f;--line:#e2ded6;--card:#fff;
+--ok:#1a7f45;--okbg:#e8f5ed;--warn:#9a6200;--warnbg:#fdf3e0;--fail:#b3261e;--failbg:#fdecea}
+@media (prefers-color-scheme:dark){:root{--bg:#17171a;--fg:#ececec;--dim:#9b978f;
+--line:#33333a;--card:#202024;--ok:#5fd08a;--okbg:#12301f;--warn:#e8b44a;--warnbg:#33280f;
+--fail:#ff8a80;--failbg:#3a1a18}}
+*{box-sizing:border-box}
+body{margin:0;padding:32px 20px;background:var(--bg);color:var(--fg);
+font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif}
+.wrap{max-width:1080px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:16px;margin:32px 0 10px;font-weight:600}
+.sub{color:var(--dim);font-size:13px;margin-bottom:20px}
+.verdict{padding:14px 18px;border-radius:10px;font-weight:600;margin-bottom:20px}
+.verdict.pass{background:var(--okbg);color:var(--ok)}
+.verdict.warn{background:var(--warnbg);color:var(--warn)}
+.verdict.fail{background:var(--failbg);color:var(--fail)}
+.cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.card{flex:1;min-width:130px;background:var(--card);border:1px solid var(--line);
+border-radius:10px;padding:14px 16px}
+.card .n{font-size:26px;font-weight:700;line-height:1.1}
+.card .l{font-size:12px;color:var(--dim);margin-top:2px}
+.card.ok .n{color:var(--ok)} .card.warn .n{color:var(--warn)} .card.fail .n{color:var(--fail)}
+table{width:100%;border-collapse:collapse;background:var(--card);
+border:1px solid var(--line);border-radius:10px;overflow:hidden}
+th{text-align:left;font-size:12px;color:var(--dim);font-weight:600;
+padding:9px 12px;border-bottom:1px solid var(--line);background:transparent}
+td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top;font-size:13.5px}
+tr:last-child td{border-bottom:none}
+tr.fail td{background:var(--failbg)}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px;
+font-weight:600;white-space:nowrap}
+.badge.ok{background:var(--okbg);color:var(--ok)}
+.badge.warn{background:var(--warnbg);color:var(--warn)}
+.badge.fail{background:var(--failbg);color:var(--fail)}
+a{color:inherit;word-break:break-all}
+.actual{color:var(--fg)} .actual .t{font-weight:600}
+.actual .m{color:var(--dim);font-size:12.5px}
+.dim{color:var(--dim)}
+.note{margin-top:14px;padding:12px 16px;border-left:3px solid var(--line);
+color:var(--dim);font-size:13px}
+code{background:var(--line);padding:1px 5px;border-radius:4px;font-size:12.5px}
+@media print{body{padding:0}.card,table{break-inside:avoid}}
+"""
+
+
+def _fmt_actual(data: dict) -> str:
+    """把 API 反查回来的元数据渲染成「实测」单元格——这是核验的物证。"""
+    if not data:
+        return ""
+    out = []
+    if data.get("title"):
+        out.append(f'<div class="t">{esc(data["title"])}</div>')
+    meta = []
+    if data.get("authors"):
+        meta.append(esc(", ".join(data["authors"][:6])))
+    if data.get("container"):
+        meta.append(esc(data["container"]))
+    loc = esc(str(data.get("volume") or "")) + (
+        f'({esc(str(data["issue"]))})' if data.get("issue") else ""
+    )
+    if data.get("pages"):
+        loc += f' {esc(str(data["pages"]))}'
+    if loc.strip():
+        meta.append(loc.strip())
+    if data.get("year"):
+        meta.append(str(data["year"]))
+    if meta:
+        out.append(f'<div class="m">{esc(" · ".join(meta))}</div>')
+    return f'<div class="actual">{"".join(out)}</div>'
+
+
+def render_html(reports: list[dict], total: dict, source: str) -> str:
+    now = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+    if total.get(FAIL):
+        vcls, vtxt = "fail", f"❌ 存在 {total[FAIL]} 项硬错误，档案不可交付"
+    elif total.get(WARN):
+        vcls, vtxt = "warn", f"⚠️ 无硬错误，但有 {total[WARN]} 项需人工点击核验"
+    else:
+        vcls, vtxt = "pass", "✅ 全部通过"
+
+    parts = [
+        "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>",
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>",
+        "<title>引文核验报告</title>",
+        f"<style>{HTML_CSS}</style></head><body><div class='wrap'>",
+        "<h1>引文核验报告</h1>",
+        f"<div class='sub'>生成于 {now} ｜ 核验对象 <code>{esc(source)}</code> "
+        f"｜ 由 <code>scripts/verify.py</code> 生成</div>",
+        f"<div class='verdict {vcls}'>{vtxt}</div>",
+        "<div class='cards'>",
+        f"<div class='card ok'><div class='n'>{total.get(OK, 0)}</div>"
+        f"<div class='l'>✅ 通过</div></div>",
+        f"<div class='card warn'><div class='n'>{total.get(WARN, 0)}</div>"
+        f"<div class='l'>⚠️ 需人工核验</div></div>",
+        f"<div class='card fail'><div class='n'>{total.get(FAIL, 0)}</div>"
+        f"<div class='l'>❌ 失败</div></div>",
+        "</div>",
+    ]
+
+    for rep in reports:
+        c = rep["counts"]
+        parts.append(f"<h2>{esc(rep['file'])}</h2>")
+        bits = [f"✅ {c.get(OK, 0)}", f"⚠️ {c.get(WARN, 0)}", f"❌ {c.get(FAIL, 0)}"]
+        bits.append(f"核验日期戳 {rep.get('stamps', 0)} 处")
+        parts.append(f"<div class='sub' style='margin-bottom:8px'>{' ｜ '.join(bits)}</div>")
+        parts.append(
+            "<table><thead><tr><th style='width:76px'>状态</th>"
+            "<th style='width:34%'>来源</th><th style='width:44%'>实测（数据源返回）</th>"
+            "<th>说明</th></tr></thead><tbody>"
+        )
+        for r in rep["links"]:
+            st = r["status"]
+            label = {OK: "✅ 通过", WARN: "⚠️ 待人工", FAIL: "❌ 失败"}[st]
+            cite = r.get("citation") or ""
+            src = f"<a href='{esc(r['url'])}' target='_blank' rel='noopener'>{esc(r['url'])}</a>"
+            cite_html = (
+                f"<div class='dim' style='margin-top:3px'>文中引文 {esc(cite)}</div>"
+                if cite else ""
+            )
+            parts.append(
+                f"<tr class='{st}'>"
+                f"<td><span class='badge {st}'>{label}</span></td>"
+                f"<td>{src}{cite_html}"
+                f"<div class='dim' style='font-size:12px;margin-top:3px'>[{esc(r['kind'])}]</div></td>"
+                f"<td>{_fmt_actual(r.get('data') or {})}</td>"
+                f"<td>{esc(r.get('detail', ''))}</td></tr>"
+            )
+        parts.append("</tbody></table>")
+
+        if rep.get("gscholar"):
+            parts.append(
+                f"<div class='note' style='border-color:var(--fail)'>"
+                f"❌ 违反铁律 4：出现 {rep['gscholar']} 处 Google Scholar 引用</div>"
+            )
+        if rep.get("stale"):
+            parts.append(
+                f"<div class='note'>⚠️ {len(rep['stale'])} 处核验日期已超出该类数据的时效窗口</div>"
+            )
+
+    parts.append(
+        "<div class='note'><b>怎么读这张表：</b><br>"
+        "❌ 失败 = 数据源的<b>明确应答</b>说这条不存在（404/410 经复测确认、DOI/PMID 查无此条、"
+        "引文卷期页与 API 不符）。这类必须修正后才能交付。<br>"
+        "⚠️ 待人工 = 反爬 403/429、网络超时、限流等，<b>不构成「来源失效」的证据</b>，"
+        "需人工点开确认。<br>"
+        "✅ 通过 = 数据源已返回内容，DOI/PubMed 项同时列出 API 实测的标题与卷期页，"
+        "可直接与文中引文逐字比对。</div>",
+    )
+    parts.append("</div></body></html>")
+    return "\n".join(parts)
+
+
 def collect_files(paths: list[str]) -> list[str]:
     if paths:
         found = []
@@ -652,6 +808,8 @@ def main() -> int:
                     help="把「无法判定」的 WARN 也视为失败（CI 保守模式）")
     ap.add_argument("--self-test", action="store_true",
                     help="运行判定逻辑的回归自检，不扫描文件")
+    ap.add_argument("--html", metavar="PATH",
+                    help="额外输出一份自包含的 HTML 核验报告（可直接用浏览器打开）")
     args = ap.parse_args()
 
     if args.self_test:
@@ -696,6 +854,14 @@ def main() -> int:
             print("\n⚠️  无硬错误，但存在需人工点击核验的项目。")
         else:
             print("\n✅ 全部通过。")
+
+    if args.html:
+        try:
+            with open(args.html, "w", encoding="utf-8") as f:
+                f.write(render_html(reports, total, " ".join(args.paths or ["examples/", "reports/"])))
+            print(f"\n📊 HTML 报告已写入 {args.html}")
+        except OSError as e:
+            print(f"\n⚠️  HTML 报告写入失败: {e}")
 
     if args.strict:
         return 1 if (total[FAIL] or total[WARN]) else 0

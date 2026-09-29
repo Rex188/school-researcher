@@ -29,3 +29,13 @@ jobs:
 
       - name: 核验 dossier 引文与链接
         run: python3 scripts/verify.py --json examples/ reports/
+
+      - name: 生成可视化核验报告
+        if: always()
+        run: python3 scripts/verify.py examples/ reports/ --html verify-report.html || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: verify-report
+          path: verify-report.html

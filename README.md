@@ -20,9 +20,14 @@
 
 ```bash
 python3 scripts/verify.py reports/          # 核验全部产出
+python3 scripts/verify.py reports/ --html report.html   # 另存一份可视化 HTML 报告
 python3 scripts/verify.py --json            # 机器可读，可直接用于 CI
 python3 scripts/verify.py --self-test       # 先证明核验器自己不误判
 ```
+
+`--html` 生成的是**单文件、零外部依赖**的报告（内联 CSS，无 CDN / 无字体 / 无 JS），
+双击即可用浏览器打开，也可直接发给别人或打印成 PDF。
+每个 DOI / PubMed 条目都会列出**数据源实际返回的标题与卷期页**，可与文中引文逐字比对。
 
 它会：
 
